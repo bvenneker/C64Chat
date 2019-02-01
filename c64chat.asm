@@ -295,7 +295,7 @@ ShiftScreen:
     ldx #$00
     !loop: 
     lda $428,x    
-    sta $400,x
+    sta ($400),x
     inx   
     cpx #$F0		// 6 regels
     bne !loop-
@@ -381,19 +381,19 @@ autosend:
     bne !skip+			   	// Skip if we are not on the first line
 
 !lookforreceiver:  
-    ldx #$00
-    lda TXBUFFER,x
-    cmp #91
-    bne !skip+
-    sta RECEIVER,x
-    lda #00
-    sta $400,x
-    inx
-!lr: lda TXBUFFER,x
+    ldx #$00				// Store receiver (@Jerom:) 
+    lda TXBUFFER,x			// in the Reciever variable
+    cmp #91					// See if line starts with @
+    bne !skip+				// skip if not @
+    sta RECEIVER,x			// Store @ in receiver if line starts with @
+    inx						// increase x
+!lr: lda TXBUFFER,x			
     sta RECEIVER,x
     sta $400,x
+    cmp #58					// Repeat until we find :
+    beq !skip+
     inx
-    cpx #$0B
+    cpx #$0B				// Max out at 11 character.
     bne !lr-
     
 !skip:  // shift message box
@@ -425,19 +425,21 @@ autosend:
     // if there was a reveiver, put it in the box again:
     ldx #$00    
     lda RECEIVER,x
-    cmp #91 
+    cmp #91 				// If receiver starts with @, put it in the message box
     bne !skip+    
-    lda #00
+    lda #00	
     ldx #00
     sta $770,x
     sta RECEIVER,x         // Set the receiver back to 0
     inx
 !wr:    lda RECEIVER,x
     sta $770,x
+    cmp #58
+    beq !skip+
     lda #00
     sta RECEIVER,x
     inx    
-    cpx #12
+    cpx #$0B				// max out at 11 characters
     bne !wr-
     
 !skip:    
