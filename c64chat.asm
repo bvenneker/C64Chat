@@ -98,19 +98,46 @@ jmp mainprogram
 
 // **********************************************************************************************
 // **********************************************************************************************
+// LIST USERS
 // this is a 'wizard' that lists the currently active users
 // this screen is activated when F2 is pressed in the main window
 !listUsers:
 	jsr $E544; // Clear screen
     
 	displayText(numberuserstxt,$0400)    //message: list of currently active users
-	displayText(changeusertxt, $0428)    //message: change name(F1), back (F1)
-//    sendBuffer($4C)	     			// GET the ssid from the serial device    
-//									// Fill the TXBUFFER with  L,0 and call rs232TX
-//									// $4C=L   	
-//	jsr rs232RX   					// reveice the response	
-    SetCursor($03,$00)              // cursor on the right possition
-//	printRXBuffer()
+	displayText(changeusertxt, $07C0)    //message: change name(F1), back (F1)
+	
+	//setup the loop for the list
+	ldy #3
+	sty cursorY
+	ldx #0
+	stx cursorX
+	!listloop:
+    sendBuffer($4C)	     			// GET the ssid from the serial device    
+									// Fill the TXBUFFER with  L,0 and call rs232TX
+									// $4C=L   	
+	jsr rs232RX   					// reveice the response	
+	lda	RXBUFFER
+	cmp #00							//there are no more names
+	beq !waitforinput+				//stop printing names
+    SetCursorMem(cursorY,cursorX)              // cursor on the right possition
+	printRXBuffer()					//print new name
+		!setlistpos:
+		//first see if we are on the first or second row			
+		lda cursorX						
+		beq !moveright+			//if the X position is on the left half of the screen, move it to the right half
+		jmp !moveleft+			//else move it to the left half
+		!moveright:			
+		ldx #20			
+		stx cursorX		//set the cursor position to the right half of the screen	
+		jmp !listloop-			
+		!moveleft:			
+		ldx #0			
+		stx cursorX		//move the cursor position to the left			
+		iny				//move the cursor position one line down
+		sty cursorY
+		cpy #20			//if we are not at the bottom of the list yet
+		bne !listloop-	//get the next name
 	
     //users have been printed
     //wait for user input to either close the list, or to change nickname
@@ -172,7 +199,7 @@ jmp mainprogram
 !endofsub:
 
 jmp mainprogram
-// END OF SETUP WIFI ----------------------------------------------------------------------------
+// END OF CHANGENAME ---------------------------------------------------------------------------
 
 
 // **********************************************************************************************
@@ -497,6 +524,7 @@ jmp keyscan
 // This routine sends data over rs232 to our microcontroller
 // It transmits the content of TXBUFFER
 rs232TX:	
+pushreg()	
     OpenRS232()
 	// PREPARE TO TRANSMIT
  SetBorderColor(11) 
@@ -526,7 +554,7 @@ rs232TX:
         lda #$00
         sta TXPREFIX       // reset the TXPREFIX
         
-         
+popreg()
 rts
 // END OF RS232TX Routine -----------------------------------------------------------------------
 
@@ -535,25 +563,23 @@ rts
 // **********************************************************************************************
 // Recieve data over the rs232 interface at 300 Baud
 rs232RX:
-        
+      pushreg()  
 		OpenRS232()
  
-		//inc $d02
+		inc $d020
  		ldx #$02
  		jsr $FFC6        // CHKIN
  		ldx #$00
     !skip: 			     // Skip garbage until  <STX> signs begin (transmission starts with STX STX STX)
-        //inc $d02 
+        inc $d020 
         jsr $FFCF        // CHRIN
         cmp #$02         // <STX>
         bne !skip-
 	rx:
- 		inc $d02
+ 		inc $d020
  		jsr $FFCF        // CHRIN
  		cmp #$0D
  		beq finishbuffer 
- 		cmp #$00
- 		beq finishbuffer
         cmp #$02       // <STX>         // Skip the <STX> signs
         beq rx                        
  		sta RXBUFFER,x
@@ -565,7 +591,7 @@ rs232RX:
 		sta RXBUFFER,x
 		CloseRS232()
         SetBorderColor(14)   // set border color to default
-       
+       popreg()
 rts  
 
 // END OF RS232 RX ------------------------------------------------------------------------------
@@ -608,6 +634,9 @@ TXPREFIX:       .byte $00
 LINECOUNT:      .byte $00
 RECEIVER:       .fill 50,0
 
+cursorX:		.byte $0
+cursorY:		.byte $0
+
     
 
 
@@ -618,8 +647,7 @@ RECEIVER:       .fill 50,0
 	txa		//move x to a
 	pha		//push it to the stack
 	tya		//move y to a
-	pha		//push it to the stack
-	               
+	pha		//push it to the stack	               
 }
 
 .macro popreg(){
@@ -742,11 +770,20 @@ pushreg()
 popreg()
 }
 
+//these two setcursor functions could be pushed into one, but all instances of Setcursor(<val1>,<val2>) should be changed to SetCursor(#<val1>,#<val2>)
 .macro SetCursor(row,col){
 pushreg()
     ldx #row    // Select row
 	ldy #col    // Select column
 	jsr $E50C   // Set cursor
+popreg()
+}
+
+.macro SetCursorMem(row,col){
+pushreg()
+	ldx row
+	ldy col
+	jsr $E50C
 popreg()
 }
 	
