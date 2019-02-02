@@ -93,6 +93,7 @@ mainprogram:
   	jsr rs232TX     				// jump to the send routine
   	
 jmp mainprogram
+
 // END OF SETUP WIFI ----------------------------------------------------------------------------
 
 // **********************************************************************************************
@@ -102,9 +103,8 @@ jmp mainprogram
 !listUsers:
 	jsr $E544; // Clear screen
     
-	displayText(numberusers,$0400)    //message: list of currently active users
-    displayText(changeuser, $07C0)    //message: change name(F1), back (F1)
-    
+	displayText(numberuserstxt,$0400)    //message: list of currently active users
+	displayText(changeusertxt, $0428)    //message: change name(F1), back (F1)
 //    sendBuffer($4C)	     			// GET the ssid from the serial device    
 //									// Fill the TXBUFFER with  L,0 and call rs232TX
 //									// $4C=L   	
@@ -168,11 +168,12 @@ jmp mainprogram
 	ldx #$0A ; jsr $E9FF  // clear input line 
 	displayText(errorusername,$05B8)
   	jmp !username-
-  	
-  	!endofsub:
-jmp mainprogram
+	
+!endofsub:
 
-// END OF CHANGE NAME ---------------------------------------------------------------------------
+jmp mainprogram
+// END OF SETUP WIFI ----------------------------------------------------------------------------
+
 
 // **********************************************************************************************
 // **********************************************************************************************
@@ -542,7 +543,7 @@ rs232RX:
  		jsr $FFC6        // CHKIN
  		ldx #$00
     !skip: 			     // Skip garbage until  <STX> signs begin (transmission starts with STX STX STX)
-        inc $d02 
+        //inc $d02 
         jsr $FFCF        // CHRIN
         cmp #$02         // <STX>
         bne !skip-
@@ -557,11 +558,9 @@ rs232RX:
         beq rx                        
  		sta RXBUFFER,x
  		inx
-        stx $d020       // set border color
  		jmp rx          // jump to rx loop
  	  
-  	finishbuffer:
-  		//inx  		
+  	finishbuffer:		
 		lda #$00
 		sta RXBUFFER,x
 		CloseRS232()
@@ -583,15 +582,15 @@ delay:
 	SetBorderColor(14)  // set border color to default
 rts
 
-
+// * = $1000
 ssidnow:		.text "Current SSID:                   " // 32 chars
 passwordnow:	.text "Current Password:               " // 32 chars
 askssid:    	.text "Name of the wifi network (SSID):" // 32 chars
 askpassword:   	.text "What is the Wifi Password?:     " // 32 chars
 askyourname:    .text "What is your user name?:        " // 32 chars
 errorusername:  .text "ERROR: Name allready taken      " // 32 chars      
-numberusers:    .text "List of connected users:        " // 32 chars      
-changeuser:     .text "Change username (F1), Back (F7) " // 32 chars      
+numberuserstxt:    .text "List of connected users:        " // 32 chars      
+changeusertxt:     .text "Change username (F1), Back (F7) " // 32 chars      
     
 TXBUFFER:   	.fill 256,0        
 RXBUFFER:   	.fill 256,0                         
@@ -613,7 +612,27 @@ RECEIVER:       .fill 50,0
 
 
 /* MACROS  */
+.macro pushreg(){
+	php		//push the status register to stack
+	pha		//push A to stack
+	txa		//move x to a
+	pha		//push it to the stack
+	tya		//move y to a
+	pha		//push it to the stack
+	               
+}
+
+.macro popreg(){
+	pla		//pull the y register from the stack
+	tay		//move it to the y register
+	pla		//pull the x register from the stack
+	tax		//move it to the x register
+	pla		//pull the acimulator from the stack
+	plp		//pull the the processor status from the stack
+}
+
 .macro delay1(){
+pushreg()
    	ldx #$FF	 
    	loopy:
    	ldy #$FF
@@ -624,9 +643,11 @@ RECEIVER:       .fill 50,0
    	dex
 	bne loopy
 	SetBorderColor(14)  // set border color to default
+popreg()
 }
 
 .macro readLineToTXBuffer(lineaddress){
+pushreg()
     ldx #$00
     stx HASTEXT        	// HASTEXT contains 00
     
@@ -646,9 +667,11 @@ RECEIVER:       .fill 50,0
     bne !loop-
     lda #$00
     sta TXBUFFER,x 		// end with zero    
+popreg()
 }
     
 .macro sendBuffer(prefix){
+pushreg()
 	ldy #$00
    	lda #prefix
    	sta TXBUFFER,y
@@ -656,9 +679,11 @@ RECEIVER:       .fill 50,0
 	lda #$00
 	sta TXBUFFER,y
 	jsr rs232TX   // send it
+popreg()
 }
    	
 .macro printRXBuffer(){
+pushreg()
 	ldx #$00
 	!W1:
 		lda RXBUFFER,x
@@ -668,9 +693,11 @@ RECEIVER:       .fill 50,0
         inx
         jmp !W1-
     !W0:    
+popreg()
 }    
 
 .macro displayText(text,addr){
+pushreg()
 ldx #$00
 	!showms:   
    		lda text,x     //setup message
@@ -683,9 +710,11 @@ ldx #$00
    		inx
    		cpx #$20
    		bne !showms-
+popreg()
 }	
 
 .macro ReadUntilReturn(){
+pushreg()
 	!loop:     
   		jsr $FFCF     // Jump to Input routine
   		cmp #$0D      // Return (ASCII 13) pressed?
@@ -694,33 +723,43 @@ ldx #$00
   		iny           // Inc. char counter
   		bne !loop-     // If Y != 0, get another char.  
 	!exit: 
+popreg()
 }	
   	
 .macro StoreChar(){
+pushreg()
   lda CHARBUFFER
   ldx MEMP
   sta $770,x
   lda MEMP
+popreg()
 }
  
 .macro SetBorderColor(color) {
+pushreg()
   lda #color
   sta $d020
+popreg()
 }
 
 .macro SetCursor(row,col){
+pushreg()
     ldx #row    // Select row
 	ldy #col    // Select column
 	jsr $E50C   // Set cursor
+popreg()
 }
 	
 .macro CloseRS232(){
+pushreg()
   ldx #$02
   jsr $FFC3 // CLOSE
   jsr $FFCC // CLRCHN // reset input and output to keyboard and screen
+popreg()
 }
 
 .macro OpenRS232(){
+pushreg()
   lda #$02
   ldx #<RS232PAR
   ldy #>RS232PAR
@@ -731,9 +770,11 @@ ldx #$00
   jsr $FFBA // SETLFS
   jsr $FFC0 // OPEN
 
+popreg()
 }
 
 .macro DrawLine(){
+pushreg()
 	SetCursor($15,$00)
 	ldx #40
     lda #185
@@ -742,6 +783,7 @@ ldx #$00
 	dex
 	bne line
 	SetCursor($16,$00)
+popreg()
 }
 	
 
@@ -754,6 +796,8 @@ ldx #$00
 	.byte 0
 upstartEnd:
     .word 0  // empty link signals the end of the program
+
+     
     * = $080e "Basic End"
 }
 // **********************************************************************************************
