@@ -11,7 +11,7 @@
 //N = send message, first line
 //S = send message, subsequent lines
 //L = get userlist
-//F = Fetch new messages
+//D = debug
 // END OF PREFIXES  -----------------------------------------------------------------------------
 
 arduino:BasicStarter(init)
@@ -291,9 +291,9 @@ setcur:
     jmp ncol
 
 incpg: 
-    inc PRGCNT ;inc PRGCNT ; inc PRGCNT ; inc PRGCNT; inc PRGCNT; inc PRGCNT // <-----  
+    inc PRGCNT ; inc PRGCNT ; inc PRGCNT // <-----  
     lda PRGCNT
-    cmp #128   
+    cmp #128
     bmi setcur
     // hide the cursor
     lda CHARBUFFER
@@ -342,8 +342,8 @@ ncol:
 handleReturnkey:
     StoreChar()
     cmp #80
-    bpl autosendjump // if MEMP >= 81, autosend
-!:  cmp #40
+    bpl autosend   // if MEMP >= 81, autosend
+    cmp #40
     bpl Return2
     lda #40
     sta MEMP
@@ -352,9 +352,6 @@ handleReturnkey:
     jsr $FFD2       //show key on the screen
     jmp readKey
 
-autosendjump:
-	jmp autosend
-	
 Return2:
     lda #80         // Set MEMP to postion 80
     sta MEMP
@@ -368,12 +365,10 @@ Return2:
 // **********************************************************************************************
 // ShiftScreen UP
 ShiftScreen:    
-    ldx #$00	//offset
+    ldx #$00
     !loop: 
-    lda $428,x    //load the character
-    sta $400,x		//write the character somewhere else
-    lda $D828,x		//load the color
-    sta $D800,x		//write the color somewhere else
+    lda $428,x    
+    sta $400,x
     inx   
     cpx #$F0		// 6 regels
     bne !loop-
@@ -382,8 +377,6 @@ ShiftScreen:
     !loop: 
     lda $518,x    
     sta $4F0,x
-    lda $D918,x
-    sta $D8F0,x
     inx   
     cpx #$F0		// 6 regels
     bne !loop-    
@@ -392,8 +385,6 @@ ShiftScreen:
     !loop: 
     lda $608,x    
     sta $5E0,x
-    lda $DA08,x
-    sta $D9E0,x
     inx   
     cpx #$F0		// 6 regels
     bne !loop-
@@ -402,26 +393,12 @@ ShiftScreen:
     !loop: 
     lda $6F8,x    
     sta $6D0,x
-    lda $DAF8,x
-    sta $DAD0,x
     inx   
-    cpx #$50		// 2 regels
+    cpx #$78		// 3 regels
     bne !loop-
-    //clear last line loop
-    ldx #$00
-    lda #32
-    !loop:
-    sta $720,x
-    inx
-    cpx #40
-    bne !loop-
-rts
-
-DisplaySendMessage:    
-pushreg() 
+    
     // write the buffered line to the screen    
     ldx #00
-    ldy #01
     !loop:
     lda TXBUFFER,x
     
@@ -429,36 +406,11 @@ pushreg()
     bne !+      // Back to
     lda #00     // the @ sign
     
-!:  sta $720,x	//store the character to the screen
-	tya 		//store the color value to the a register
-	sta $DB20,x	//change the color of the letter
+!:  sta $720,x
     inx
     cpx #$28
     bne !loop-
-popreg()
-rts
-
-DisplayRecieveMessage:
-pushreg()
-	// write the recieved line to the screen
-	ldx #00		//set x to 0
-	ldy #05		//set y for color to 5
-	!loop:
-	lda RXBUFFER,x	//load a character from the rxbuffer
-	cmp #$00		//if the character is equal to 00
-	beq stringend	//then its the end of the string, so exit the loop
-	//sbc #64
-	sta $720,x		//else, output the character to the screen
-	tya				//load the color code stored in Y into A			
-	sta $DB20,x		//change the color of the space the letter will appear on.
-	inx				//increment X for the next character
-	cpx #$28		//see if x is at the end of the screen
-	bne !loop-		//if not go back and read the next character
-	popreg()
-rts
-	stringend:
-	inc $D020
-popreg()
+    
 rts
 
 // **********************************************************************************************
@@ -494,7 +446,6 @@ autosend:
     jsr rs232TX
     jsr rs232RX   // wait for reply
     jsr ShiftScreen
-    jsr DisplaySendMessage
     lda #$53  
     sta TXPREFIX  // set prefix to 'S' for the next lines  
     
@@ -521,7 +472,7 @@ autosend:
 !skip:  // shift message box
     ldx #$00
     !loop: 
-   // inc $d020
+    inc $d020
     lda $798,x    
     sta $770,x
     inx   
@@ -593,7 +544,7 @@ pushreg()
         cmp #$00
         beq endRs232TX                              
         jsr $FFD2 			// CHROUT        
-       // inc $d020    		// set border color        
+        inc $d020    		// set border color        
         inx
         bne !loop-
 
@@ -610,21 +561,10 @@ rts
 // END OF RS232TX Routine -----------------------------------------------------------------------
 
 pollrs:
-
 pushreg()
-    lda MEMP	//see if the cursor is at possition 0
-    cmp #$00
-    bne !+		//if not stop polling
-//	inc $d020
-	sendBuffer($46)	//else send a poll request
-	jsr rs232RX		//wait for a response
-	lda RXBUFFER	//check if the first bit in the buffer is a 0
-	cmp #$00		//if the first bit is a 0, (no messages response)
-	beq !+			//then skip to the end
-	//printing the message
-	jsr ShiftScreen	//shift the screen
-	jsr DisplayRecieveMessage	//display the new message
-	!:
+	inc $d020
+	sendBuffer($44)
+	jsr rs232RX
 popreg()
 rts
 
@@ -635,19 +575,19 @@ rs232RX:
       pushreg()  
 		OpenRS232()
  
-//		inc $d020
+		inc $d020
  		ldx #$02
  		jsr $FFC6        // CHKIN
  		ldx #$00
     !skip: 			     // Skip garbage until  <STX> signs begin (transmission starts with STX STX STX)
- //       inc $d020 
+        inc $d020 
         jsr $FFCF        // CHRIN
         cmp #$02         // <STX>
         bne !skip-
 	rx:
-// 		inc $d020
+ 		inc $d020
  		jsr $FFCF        // CHRIN
- 		cmp #$FF
+ 		cmp #$0D
  		beq finishbuffer 
         cmp #$02       // <STX>         // Skip the <STX> signs
         beq rx                        
@@ -669,7 +609,7 @@ delay:
    	loopy:
    	ldy #$FF
    	  loopx:
-//   	    inc $d020
+   	    inc $d020
    	    dey
    	    bne loopx
    	dex
@@ -693,7 +633,7 @@ LINEBUFFER:   	.fill 256,0
 RS232PAR:     	.byte %00000110,%00000000 // 300 Baud  
 //RS232PAR:     	.byte %00001000,%00000000 // 1200 Baud  
 
-MEMP:           .byte $01 // temp buffer for cursor postion offset, also line length
+MEMP:           .byte $00 // temp buffer for cursor postion offset, also line length
 PRGCNT:         .byte $00 
 HCOUNT:			.byte $00
 CHARBUFFER:     .byte $20
@@ -734,7 +674,7 @@ pushreg()
    	loopy:
    	ldy #$FF
    	  loopx:
- //  	    inc $d020
+   	    inc $d020
    	    dey
    	    bne loopx
    	dex
@@ -837,10 +777,6 @@ pushreg()
   lda #color
   sta $d020
 popreg()
-}
-
-.macro GetCursor(){
-
 }
 
 //these two setcursor functions could be pushed into one, but all instances of Setcursor(<val1>,<val2>) should be changed to SetCursor(#<val1>,#<val2>)
