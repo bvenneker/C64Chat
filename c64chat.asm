@@ -1,5 +1,9 @@
 // **********************************************************************************************
 // **********************************************************************************************
+// Helpfull links:
+//    http://unusedino.de/ec64/technical/project64/mapping_c64.html
+//
+//
 // serial comunication prefixes
 // this is a list of the prefix characters for comunicating to the arduino
 //W = set ssid
@@ -11,7 +15,9 @@
 //N = send message, first line
 //S = send message, subsequent lines
 //L = get userlist
-//F = Fetch new messages
+//F = Fetch message
+
+
 // END OF PREFIXES  -----------------------------------------------------------------------------
 
 arduino:BasicStarter(init)
@@ -23,18 +29,17 @@ init:
    lda #$06
    ora $d018
    sta $d018 
-   
-   
-   
+ 
 
 // **********************************************************************************************
 // **********************************************************************************************
 // Main Loop of the program
 mainprogram:
+    OpenRS232()    
     jsr $E544; // Clear screen
     DrawLine()
 	mainloop:
-
+ 
 	jmp keyscan
 	
 	jmp mainloop 
@@ -43,46 +48,74 @@ mainprogram:
 // END OF MAIN LOOP -----------------------------------------------------------------------------
 
 
+  
+
 // **********************************************************************************************
 // **********************************************************************************************
 // SETUP wifi,
 // this is a 'wizard' to guide the user through the wifi setup.
 // this screen is activated when F1 is pressed in the main window
 !setupWiFi:
-	jsr $E544; // Clear screen
+ 
+ldy #$00
+  !clear:
+  
+  lda #$00
+  sta ($F7),y
+  iny
+  cpy #$FF
+bne !clear-
+
+	jsr $E544						// Clear screen
+	lda #$00						// Clear TX Buffer    	
+    sta TXBUFFER
         
-    displayText(ssidnow,$0400)		// Text line for current SSID
-    displayText(passwordnow,$0428)  // Text line for current Password
+    displayText(ssidnow,$0400,
+    	14,$D800)					// Text line for current SSID
+    displayText(passwordnow,
+    	$0428,14,$D828)				// Text line for current Password
     
-    sendBuffer($51)	     			// GET the ssid from the serial device    
+    lda #$51
+    sta TXPREFIX 		  			// GET the ssid from the serial device    
 									// Fill the TXBUFFER with  Q,0 and call rs232TX
-									// $51=Q   	
-	jsr rs232RX   					// reveice the response	 
-	SetCursor($00,$0E)  			// Display RX buffer
-	printRXBuffer()
+									// $51=Q
+    jsr !rs232TXRX+					// Send the buffer and wait for the response
+		 
+	SetCursor($00,$0E)  			// move cursor to first line
+	printRXBuffer()					// Display RX buffer
 	
-	sendBuffer($41)					// Get the password from the serial device
+	lda #$41
+    sta TXPREFIX					// Get the password from the serial device
 									// Fill the TXBUFFER with  A,0 and call rs232TX
 									// $41=A
-	jsr rs232RX 					// receive the repsonse  
-	SetCursor($01,$12)		
+	jsr !rs232TXRX+					// Send the buffer and wait for the response
+	SetCursor($01,$12)		        // move cursor
 	printRXBuffer()  				// Display RX buffer 
-	displayText(askssid,$0478)  	//Display the SSID question
+	displayText(askssid,
+		$0478,14,$D878)				// Display the SSID question
+	displayText(entertoexit,
+		$04F0,14,$D8F0)				// Display message "press RETURN to exit"
 	SetCursor($04,$00)  			// Now the user can type the ssid	
-	lda #$57
-    sta TXPREFIX       				// First character in the txbuffer should be W (so the arduino knows this is the SSID string)
+	
 	ldy #$00    					// Y = char counter = 0
 	ReadUntilReturn()	
+	cpy #01							// if the y counter is still 0, user pressed Return without any input -> exit	
+	bne !+							// exit if zero
+	jmp !exitWifiSetup+
+	!:	
   	lda #$00    					// end the string with 0
   	sta TXBUFFER,y
   	
     			        	   	 	// at this point return was pressed.
         	    			  	  	// TXBUFFER holds the SSID Name
     	            				// Send the SSID to the serial port.
-	jsr rs232TX     				// jump to the send routine
+    lda #$57
+    sta TXPREFIX       				// First character in the txbuffer should be W (so the arduino knows this is the SSID string)
+	jsr !rs232TXRX+					// Send the buffer and wait for the response
 					
 	
-	displayText(askpassword,$04F0)		// Now Ask for the wifi Password
+	displayText(askpassword,
+	            $04F0,14,$D8F0)		// Now Ask for the wifi Password
 	
     SetCursor($07,$00)				// Now the user can type the password 						 
 	lda #$50
@@ -91,8 +124,9 @@ mainprogram:
 	ReadUntilReturn()	    
   	lda #$00    					// end the string with 0
   	sta TXBUFFER,y
-  	jsr rs232TX     				// jump to the send routine
-  	
+  	jsr !rs232TXRX+					// Send the buffer and wait for the response
+
+!exitWifiSetup:
 jmp mainprogram
 
 // END OF SETUP WIFI ----------------------------------------------------------------------------
@@ -103,10 +137,11 @@ jmp mainprogram
 // this is a 'wizard' that lists the currently active users
 // this screen is activated when F2 is pressed in the main window
 !listUsers:
+ 
 	jsr $E544; // Clear screen
     
-	displayText(numberuserstxt,$0400)    //message: list of currently active users
-	displayText(changeusertxt, $07C0)    //message: change name(F1), back (F1)
+	displayText(numberuserstxt,$0400,14,$D800)    //message: list of currently active users
+	displayText(waituserslisttxt, $07C0,14,$DBC0)    //message: Collecting users, please Wait
 	
 	//setup the loop for the list
 	ldy #3
@@ -114,72 +149,79 @@ jmp mainprogram
 	ldx #0
 	stx cursorX
 	!listloop:
-    sendBuffer($4C)	     			// GET the ssid from the serial device    
-									// Fill the TXBUFFER with  L,0 and call rs232TX
-									// $4C=L   	
-	jsr rs232RX   					// reveice the response	
-	lda	RXBUFFER
-	cmp #00							//there are no more names
-	beq !waitforinput+				//stop printing names
-    SetCursorMem(cursorY,cursorX)              // cursor on the right possition
-	printRXBuffer()					//print new name
+	lda #$4C						// Fill the buffer with L (4C = L)
+    sta TXPREFIX 					// And send it
+    jsr !rs232TXRX+	     			// And wait for the response    		
+	lda	RXBUFFER					// Check if the response is empty
+	cmp #00							// there are no more names
+	beq !endOfList+					// stop printing names
+    SetCursorMem(cursorY,cursorX)	// cursor on the right possition
+	printRXBuffer()					// print new name
 		!setlistpos:
-		//first see if we are on the first or second row			
+									//first see if we are on the first or second row			
 		lda cursorX						
-		beq !moveright+			//if the X position is on the left half of the screen, move it to the right half
-		jmp !moveleft+			//else move it to the left half
+		beq !moveright+				//if the X position is on the left half of the screen, move it to the right half
+		jmp !moveleft+				//else move it to the left half
 		!moveright:			
 		ldx #20			
-		stx cursorX		//set the cursor position to the right half of the screen	
+		stx cursorX					//set the cursor position to the right half of the screen	
 		jmp !listloop-			
 		!moveleft:			
 		ldx #0			
-		stx cursorX		//move the cursor position to the left			
-		iny				//move the cursor position one line down
+		stx cursorX					//move the cursor position to the left			
+		iny							//move the cursor position one line down
 		sty cursorY
-		cpy #20			//if we are not at the bottom of the list yet
-		bne !listloop-	//get the next name
+		cpy #20						//if we are not at the bottom of the list yet
+		bne !listloop-				//get the next name
 	
     //users have been printed
     //wait for user input to either close the list, or to change nickname
+
+!endOfList:    
+  //  jsr $FFCC
+  //  jsr $FFCF
+    
+    displayText(changeusertxt, $07C0,14,$DBC0)    //message: change name(F1), back (F1)
     !waitforinput:
-    jsr $ffe4       //read key
-    beq !waitforinput-     //if no key pressed loop forever
-!:  cmp #133   		// F1 pressed
+    jsr $FFCC
+    jsr $ffe4       				//read key
+    beq !waitforinput-				//if no key pressed loop forever
+!:  cmp #133   						// F1 pressed
     bne !+
     jmp !changename+
-!:  cmp #136        // F7 pressed
+!:  cmp #136        				// F7 pressed
     bne !+
-    jmp mainprogram
-!:  jmp !waitforinput-  //if a different key was pressed, ignore it and wait for more input
-
+    jmp !exitlistUsers+
+!:  jmp !waitforinput-				//if a different key was pressed, ignore it and wait for more input
+!exitlistUsers:
 jmp mainprogram
 // END OF LIST USERS ----------------------------------------------------------------------------
+
 
 // **********************************************************************************************
 // **********************************************************************************************
 // this is a 'wizard' that allows the user to change his/her name
 // this screen is activated when F1 is pressed in the list user window
 !changename:
+ 
     jsr $E544; // Clear screen
 
   	// Ask the username Question
-  	displayText(askyourname,$0400)
+  	displayText(askyourname,$0400,14,$D800)
    		
    !username:   
 	// Now the user can type his user name
 	SetCursor($01,$00)	 
-	lda #$56
-    sta TXPREFIX       // // First character in the txbuffer should be V (so the arduino knows this is the user name)
-
+	ldy #$00 
 	ReadUntilReturn()	  
 	lda #$00    	// end the string with 0
   	sta TXBUFFER,y
-  	jsr rs232TX     // jump to the send routine
-  	
-  	// wait for the reply (server checks if username is allready taken)
-  	jsr rs232RX           // Get the response
-  		
+
+    lda #$56						// Fill the buffer with L (46 = V)
+    sta TXPREFIX 					// And send it
+    								// wait for the reply (server checks if username is allready taken)
+    jsr !rs232TXRX+					// Get the response
+    
 	
 	// Check the buffer for errors
 	// E001 = name already taken
@@ -188,17 +230,16 @@ jmp mainprogram
 	lda RXBUFFER,x
 	cmp #69  // if the buffer starts with E
     beq !error+
-    jmp !endofsub+         
+    jmp !exitchangename+         
     
 	!error:
 	// show username error
 	  
 	ldx #$0A ; jsr $E9FF  // clear input line 
-	displayText(errorusername,$05B8)
+	displayText(errorusername,$05B8,10,$D9B8)
   	jmp !username-
 	
-!endofsub:
-
+!exitchangename:
 jmp mainprogram
 // END OF CHANGENAME ---------------------------------------------------------------------------
 
@@ -207,11 +248,11 @@ jmp mainprogram
 // **********************************************************************************************
 // This is the scan Routine
 // We do not use the kernal input routines for this, we want more control over the position
-// of the cursor. Also we need to transmit and receive data while the user is typing.
+// of the cursor. Also we need to receive data while the user is typing (receive needs to be non-blocking).
 
 handleLeft: 
   StoreChar() 
-  cmp #00         // compare MEMP
+  cmp #00         				// compare MEMP
   bne !+
   jmp !exit+
 !:ldx MEMP
@@ -220,12 +261,12 @@ handleLeft:
   lda $770,x
   sta CHARBUFFER
   lda zpBuffer
-  jsr $FFD2       //show key on the screen  
+  jsr $FFD2       				//show key on the screen  
 !exit:jmp readKey
   
 handleRight: 
   StoreChar()
-  cmp #119 // compare MEMP
+  cmp #119						// compare MEMP
   bne !+
   jmp !exit+
 !:ldx MEMP
@@ -234,34 +275,38 @@ handleRight:
   lda $770,x
   sta CHARBUFFER
   lda zpBuffer
-  jsr $FFD2       //show key on the screen
+  jsr $FFD2						//show key on the screen
 !exit:jmp readKey
 
 handleUp: 
   StoreChar()
   cmp #40
-  bmi !exit+          // if MEMP <= 41, ignore
-  sbc #40         // substract 40
-  sta MEMP        // store new value
-  ldx MEMP ; lda $770,x ; sta CHARBUFFER
+  bmi !exit+					// if MEMP <= 41, ignore
+  sbc #40         				// substract 40
+  sta MEMP        				// store new value
+  ldx MEMP
+  lda $770,x
+  sta CHARBUFFER
   lda zpBuffer
-  jsr $FFD2       //show key on the screen
-!exit:jmp readKey
+  jsr $FFD2						//show key on the screen
+!exit: jmp readKey
   
 handleDown:
   StoreChar()
-  cmp #80         // compare MEMP
-  bpl !exit+      // if MEMP >= 81, ignore
-  adc #40         // add 40
-  sta MEMP        // store new value
-  ldx MEMP ; lda $770,x ; sta CHARBUFFER
+  cmp #80         				// compare MEMP
+  bpl !exit+      				// if MEMP >= 81, ignore
+  adc #40         				// add 40
+  sta MEMP        				// store new value
+  ldx MEMP
+  lda $770,x
+  sta CHARBUFFER
   lda zpBuffer
-  jsr $FFD2       //show key on the screen
+  jsr $FFD2      				//show key on the screen
 !exit:jmp readKey
    
 handleDel:   
   StoreChar() 
-  cmp #00         // compare MEMP
+  cmp #00         				// compare MEMP
   bne !+
   jmp !exit+ 
 !:ldx MEMP
@@ -272,94 +317,106 @@ handleDel:
   sta CHARBUFFER
   lda #157
   // lda zpBuffer
-  jsr $FFD2       //show key on the screen  
+  jsr $FFD2       				//show key on the screen  
 !exit:jmp readKey
-
 
 keyscan:    
     SetCursor($16,$00)
 	ldx #00
 	stx MEMP
-	jsr $FFCC   // CLRCHN // reset input and output to keyboard and screen
+	jsr $FFCC   				// CLRCHN // reset input and output to keyboard and screen
 	
- 
-setcur:
-    // display a cursor
-    lda #$64
+!showcur:
+    // display a cursor    
     ldx MEMP
-    sta $770,x
+    lda #$A0   
+    sta $770,x        
     jmp ncol
 
-incpg: 
-    inc PRGCNT ;inc PRGCNT ; inc PRGCNT ; inc PRGCNT; inc PRGCNT; inc PRGCNT // <-----  
-    lda PRGCNT
-    cmp #128   
-    bmi setcur
-    // hide the cursor
+!incpg: 
+    inc PRGCNT  
+    inc PRGCNT
+    inc PRGCNT
+    lda PRGCNT    
+    cmp #128       
+    bmi !showcur-				// if PRGCNT >= 128 goto !showcur  
+    
+!hidecur:    
     lda CHARBUFFER
     ldx MEMP
-    sta $770,x
+    sta $770,x    
     jmp ncol
     
 readKey:	
     inc HCOUNT 
     lda HCOUNT
     cmp #00
-    beq incpg
+    beq !incpg-
+    cmp #64
+    beq !incpg-
+    cmp #128
+    beq !incpg-
+    cmp #192
+    beq !incpg-
 
 ncol:
-	jsr pollrs
-	jsr $ffe4       //read key
-    beq readKey     //if no key pressed loop forever
-    sta zpBuffer    //store the key to key buffer
-    cmp #17         // Handle Cursor Down
+   
+    jsr !readIncomming+	
+	jsr $FFCC
+	jsr $ffe4       			//read key
+    beq readKey     			//if no key pressed loop forever
+    sta zpBuffer    			//store the key to key buffer
+    cmp #17         			// Handle Cursor Down
     bne !+
     jmp handleDown
-!:  cmp #145        // Handle Cursor UP
+!:  cmp #145        			// Handle Cursor UP
     bne !+
     jmp handleUp
-!:  cmp #13			// Handle return key
+!:  cmp #13						// Handle return key
     bne !+
     jmp handleReturnkey
-!:  cmp #133   		// F1 pressed
+!:  cmp #133   					// F1 pressed
     bne !+
-    jmp !setupWiFi-
-!:  cmp #137        // F2 pressed
+    jmp !setupWiFi-   
+!:  cmp #137     				// F2 pressed
     bne !+
     jmp !listUsers-
-!:  cmp #136        // F7 pressed
+!:  cmp #136    				// F7 pressed
     bne !+
     jmp autosend
-!:  cmp #157        // Handle Left Cursor
+!:  cmp #157					// Handle Left Cursor
     bne !+
     jmp handleLeft
-!:  cmp #20         // Handle Delete
+!:  cmp #20						// Handle Delete
     bne !+
     jmp handleDel
     
-!:  jmp handleRight  // other keys should also be handleright
+!:  jmp handleRight				// other keys should also be handleRight
       
 handleReturnkey:
     StoreChar()
     cmp #80
-    bpl autosendjump // if MEMP >= 81, autosend
+    bpl autosendjump 			// if MEMP >= 81, autosend
 !:  cmp #40
     bpl Return2
     lda #40
     sta MEMP
-    ldx MEMP ; lda $770,x ; sta CHARBUFFER ; lda zpBuffer
+    ldx MEMP
+    lda $770,x
+    sta CHARBUFFER
+    lda zpBuffer    
     
-    jsr $FFD2       //show key on the screen
+    jsr $FFD2       			//show key on the screen
     jmp readKey
 
 autosendjump:
 	jmp autosend
 	
 Return2:
-    lda #80         // Set MEMP to postion 80
+    lda #80         			// Set MEMP to postion 80
     sta MEMP
-	lda zpBuffer    // Load the keybuffer
-    jsr $FFD2       //show key on the screen
+	lda zpBuffer    			// Load the keybuffer
+    jsr $FFD2       			//show key on the screen
     jmp readKey
       
 // END OF KEYSCAN ROUTINE -----------------------------------------------------------------------
@@ -368,14 +425,14 @@ Return2:
 // **********************************************************************************************
 // ShiftScreen UP
 ShiftScreen:    
-    ldx #$00	//offset
+    ldx #$00					//offset
     !loop: 
-    lda $428,x    //load the character
-    sta $400,x		//write the character somewhere else
-    lda $D828,x		//load the color
-    sta $D800,x		//write the color somewhere else
+    lda $428,x					//load the character
+    sta $400,x					//write the character somewhere else
+    lda $D828,x					//load the color
+    sta $D800,x					//write the color somewhere else
     inx   
-    cpx #$F0		// 6 regels
+    cpx #$F0					// 6 lines
     bne !loop-
     
     ldx #$00
@@ -385,7 +442,7 @@ ShiftScreen:
     lda $D918,x
     sta $D8F0,x
     inx   
-    cpx #$F0		// 6 regels
+    cpx #$F0					// 6 lines
     bne !loop-    
     
     ldx #$00
@@ -395,7 +452,7 @@ ShiftScreen:
     lda $DA08,x
     sta $D9E0,x
     inx   
-    cpx #$F0		// 6 regels
+    cpx #$F0					// 6 lines
     bne !loop-
     
     ldx #$00
@@ -405,7 +462,7 @@ ShiftScreen:
     lda $DAF8,x
     sta $DAD0,x
     inx   
-    cpx #$50		// 2 regels
+    cpx #$50					// 2 lines
     bne !loop-
     //clear last line loop
     ldx #$00
@@ -425,59 +482,56 @@ pushreg()
     !loop:
     lda TXBUFFER,x
     
-    cmp #91     // Change number 91
-    bne !+      // Back to
-    lda #00     // the @ sign
+    cmp #91     				// Change number 91
+    bne !+      				// Back to
+    lda #00     				// the @ sign
     
-!:  sta $720,x	//store the character to the screen
-	tya 		//store the color value to the a register
-	sta $DB20,x	//change the color of the letter
+!:  sta $720,x					//store the character to the screen
+	tya 						//store the color value to the a register
+	sta $DB20,x					//change the color of the letter
     inx
     cpx #$28
     bne !loop-
 popreg()
 rts
 
-DisplayRecieveMessage:
+DisplayReceiveMessage:
 pushreg()
-	// write the recieved line to the screen
-	ldx #00		//set x to 0
-	ldy #05		//set y for color to 5
+								// write the received line to the screen
+	ldx #00						//set x to 0
+	ldy RXMESSCOL				//Load color into y
 	!loop:
-	lda RXBUFFER,x	//load a character from the rxbuffer
-	cmp #$00		//if the character is equal to 00
-	beq stringend	//then its the end of the string, so exit the loop
-	//sbc #64
-	sta $720,x		//else, output the character to the screen
-	tya				//load the color code stored in Y into A			
-	sta $DB20,x		//change the color of the space the letter will appear on.
-	inx				//increment X for the next character
-	cpx #$28		//see if x is at the end of the screen
-	bne !loop-		//if not go back and read the next character
-	popreg()
-rts
-	stringend:
-	inc $D020
+	lda RXBUFFER,x				//load a character from the rxbuffer
+	cmp #$00					//if the character is equal to 00
+	beq !exit+					//then its the end of the string, so exit the loop
+	cmp #91
+	bne !+
+	lda #0
+!:	sta $720,x					//else, output the character to the screen
+	tya							//load the color code stored in Y into A			
+	sta $DB20,x					//change the color of the space the letter will appear on.
+	inx							//increment X for the next character
+	cpx #$28					//see if x is at the end of the screen
+	bne !loop-					//if not go back and read the next character
+!exit:
 popreg()
 rts
 
 // **********************************************************************************************
 // **********************************************************************************************
 // AUTOSEND
-// When the user presses enter on the last line or when typing until the very last corner
-// or when pressing F7, this routine goes off and sends the data
+// When the user presses enter on the last line or when pressing F7, this routine goes off and sends the data
 autosend:
+ 
     // send each line as a separate message
     // The first line will get the 'N' prefix (for new message)
     // other lines get the 'S' prefix
     
     //  ALL MESSAGES GO TO THE GROUP UNLESS IT STARTS WITH @USERNAME:  
     //  JUST SEND THE MESSAGE 'AS IS', WE WILL FIGURE OUT IN PHP WHO THE RECIEVER SHOULD BE      
-       
-
-    // hide the cursor (or else you will send it too)
-    lda #32     // space
-    ldx MEMP    // current cursor position
+    
+    lda CHARBUFFER 						// display the character under the cursor in stead of the cursor
+    ldx MEMP    						// current cursor position
     sta $770,x
     
     // Get first line into the buffer
@@ -485,22 +539,33 @@ autosend:
     lda #$00
     sta LINECOUNT
     lda #$4E
-    sta TXPREFIX  // set prefix to 'N' for the first line          
+    sta TXPREFIX  						// set prefix to 'N' for the first line          
     
 !lineloop:
     readLineToTXBuffer($770)
-    lda HASTEXT ;  cmp #$00 ;  beq !+    // see if the line has any text, skip next commands if empty     
+    lda HASTEXT   						// see if the line has any text, skip next commands if empty
+    cmp #$00 
+    beq !+    							         
     
-    jsr rs232TX
-    jsr rs232RX   // wait for reply
-    jsr ShiftScreen
+    jsr !rs232TXRX+						// Send the line and wait for reply
+    jsr ShiftScreen    
+    lda RXBUFFER						// Check if the reply contains an error
+    cmp #254							// 254 means the user does not exist!!
+    bne !noerror+
+    displayText(errornouser,
+    	$0720,10,$DB20)					// Display the error message
+    lda #$0
+    sta CHARBUFFER
+    jmp keyscan
+!noerror:
+    
     jsr DisplaySendMessage
     lda #$53  
-    sta TXPREFIX  // set prefix to 'S' for the next lines  
+    sta TXPREFIX  						// set prefix to 'S' for the next lines  
     
-!:  lda LINECOUNT 			// on the first line
-    cmp #$00				// look for a receiver
-    bne !skip+			   	// Skip if we are not on the first line
+!:  lda LINECOUNT 						// on the first line
+    cmp #$00							// look for a receiver
+    bne !skip+			   				// Skip if we are not on the first line
 
 !lookforreceiver:  
     ldx #$00
@@ -508,12 +573,14 @@ autosend:
     cmp #91
     bne !skip+
     sta RECEIVER,x
-    lda #00
-    sta $400,x
+    //lda #00
+    //sta $400,x
     inx
 !lr: lda TXBUFFER,x
     sta RECEIVER,x
-    sta $400,x
+    //sta $400,x
+    cmp #$3A 							// end at :
+    beq !skip+
     inx
     cpx #$0B
     bne !lr-
@@ -537,8 +604,7 @@ autosend:
 
 !exitloop:
     
-   	// jsr delay
-  
+
     // clear the message lines
     ldx #$16 ; jsr $E9FF  // clear line 16(hex)
     ldx #$17 ; jsr $E9FF  // clear line 17(hex)
@@ -548,152 +614,197 @@ autosend:
     ldx #$00    
     lda RECEIVER,x
     cmp #91 
-    bne !skip+    
+    bne !noreceiver+    
     lda #00
     ldx #00
     sta $770,x
-    sta RECEIVER,x         // Set the receiver back to 0
+    sta RECEIVER,x         // Set the receiver back to 0    
     inx
 !wr:    lda RECEIVER,x
     sta $770,x
+    cmp #$3A				// end after :
+    beq !skip+
     lda #00
-    sta RECEIVER,x
+    sta RECEIVER,x    
     inx    
     cpx #12
-    bne !wr-
-    
+    bne !wr-    
 !skip:    
+	inx							// Get the cursor back to the right place
+	stx MEMP					// Right after the @receiver:
+    txa    
+    tay    						// Set column
+    ldx #$16    				// Select row	
+	jsr $E50C   				// Set cursor
+	jsr $FFCC   				// CLRCHN // reset input and output to keyboard and screen
+    jmp !showcur-
+!noreceiver:
 jmp keyscan
 
+// END OF AUTOSEND ROUTINE -----------------------------------------------------------------------
 
-
-// END OF KEYSCAN ROUTINE -----------------------------------------------------------------------
 
 
 // **********************************************************************************************
 // **********************************************************************************************
 // This routine sends data over rs232 to our microcontroller
-// It transmits the content of TXBUFFER
-rs232TX:	
-pushreg()	
-    OpenRS232()
-	// PREPARE TO TRANSMIT
- SetBorderColor(11) 
-    ldx #$02
+// It transmits the content of TXBUFFER and waits for a response (BLOCKING!)
+// the reponse is stored in the RX Buffer
+!rs232TXRX:
+	pushreg()  
+	
+	ldx #$02
     jsr $FFC9 				// CHKOUT
-    ldx #$00
- SetBorderColor(10) 
-	// TRANSMISSION
+  	ldx #$00	
 	lda TXPREFIX
-	cmp #$00
-	beq !loop+
-	jsr $FFD2 			// CHROUT 
-	!loop:
+	cmp #$00				// IF the prefix is 0, skip
+	beq !loop+				//
+	jsr $FFD2 				// send the prefix CHROUT
+	!loop:					// Loop to send the TX Buffer
 		lda TXBUFFER,X
-        cmp #$00
-        beq endRs232TX                              
+		cmp #$00			// If the buffer char is 0
+        beq !endRs232TX+		// end the sequence                              
         jsr $FFD2 			// CHROUT        
-       // inc $d020    		// set border color        
+        inc $d020	    	// set border color        
         inx
         bne !loop-
-
-	endRs232TX:
-	    lda #$00			// End with 0
-	    jsr $FFD2 			// CHROUT  
-		CloseRS232()      
-        SetBorderColor(14)   // set border color to default
-        lda #$00
-        sta TXPREFIX       // reset the TXPREFIX
-        
-popreg()
-rts
-// END OF RS232TX Routine -----------------------------------------------------------------------
-
-pollrs:
-
-pushreg()
-    lda MEMP	//see if the cursor is at possition 0
-    cmp #$00
-    bne !+		//if not stop polling
-//	inc $d020
-	sendBuffer($46)	//else send a poll request
-	jsr rs232RX		//wait for a response
-	lda RXBUFFER	//check if the first bit in the buffer is a 0
-	cmp #$00		//if the first bit is a 0, (no messages response)
-	beq !+			//then skip to the end
-	//printing the message
-	jsr ShiftScreen	//shift the screen
-	jsr DisplayRecieveMessage	//display the new message
-	!:
-popreg()
-rts
-
-// **********************************************************************************************
-// **********************************************************************************************
-// Recieve data over the rs232 interface at 300 Baud
-rs232RX:
-      pushreg()  
-		OpenRS232()
- 
-//		inc $d020
- 		ldx #$02
- 		jsr $FFC6        // CHKIN
- 		ldx #$00
-    !skip: 			     // Skip garbage until  <STX> signs begin (transmission starts with STX STX STX)
- //       inc $d020 
-        jsr $FFCF        // CHRIN
-        cmp #$02         // <STX>
-        bne !skip-
-	rx:
-// 		inc $d020
- 		jsr $FFCF        // CHRIN
- 		cmp #$FF
- 		beq finishbuffer 
-        cmp #$02       // <STX>         // Skip the <STX> signs
-        beq rx                        
- 		sta RXBUFFER,x
- 		inx
- 		jmp rx          // jump to rx loop
+	!endRs232TX:
+	lda #$00				// End with 0
+	jsr $FFD2				// CHROUT
+	
+	!WaitForResponse:
+	ldx #$02
+ 	jsr $FFC6		        // CHKIN
+ 	ldx #$00
+    !skip: 					// Skip garbage until  <STX> signs begin (transmission starts with STX STX)
+    inc $d020 
+    jsr $FFCF				// CHRIN
+    cmp #$02         		// <STX>
+    bne !skip-
+	!rx:					// Loop to receive the buffer
+		inc $d020
+ 		jsr $FFCF	        // CHRIN
+ 		cmp #$FF			// Transmission ends with FF (255)
+ 		beq !finishbuffer+ 
+        cmp #$02    	   // <STX>         // Skip the <STX> signs
+    	beq !rx-			// restart loop without storing character                        
+    	sta RXBUFFER,x		// Store the character
+ 		inx					
+ 		jmp !rx-          	// jump to rx loop
  	  
-  	finishbuffer:		
+  	!finishbuffer:		
 		lda #$00
 		sta RXBUFFER,x
-		CloseRS232()
+		 
         SetBorderColor(14)   // set border color to default
-       popreg()
+popreg()
 rts  
+// END OF RS232TXRX ROUTINE -----------------------------------------------------------------------
 
-// END OF RS232 RX ------------------------------------------------------------------------------
+
+
+// **********************************************************************************************
+// **********************************************************************************************
+!readIncomming:
+pushreg()  
+  
+  							// See if there is any data in the RS232 receive buffer
+  lda $029B 				// end index marker
+  cmp $029C                 // start index marker
+  
+            				// if the difference is zero there is nothing
+  beq !exit+ 				// so exit
+  
+  // we have data to collect
+  SetBorderColor(0)			// border goes black
+  ldx #$02
+  jsr $FFC6					// CHKIN
+  jsr $FFCF					// CHRIN
+  cmp #250					// RESET OUR BUFFER INDEX (250 is start of message)
+  beq !resetBuffer+
+  cmp #92
+  bne !+
+  ldx #13
+  stx RXMESSCOL
+  jmp !exit+
+!: cmp #255					// Finish the buffer and display message  
+  beq !finishMessage+
+  ldx BUFFERPOS
+  sta RXBUFFER,x
+  inx
+  stx BUFFERPOS
+  jmp !exit+
+   
+  !finishMessage:  
+  ldx BUFFERPOS
+  lda #$00
+  sta RXBUFFER,x
+  jsr ShiftScreen
+  jsr DisplayReceiveMessage
+
+  
+  !resetBuffer:
+  ldx #5
+  stx RXMESSCOL
+  lda #0
+  sta BUFFERPOS
+  
+  SetBorderColor(14)
+  
+  !exit:
+  SetBorderColor(14)
+  
+  inc FCOUNTER
+  lda FCOUNTER
+  cmp #0
+  bne !+
+  inc FCOUNTER2
+  lda FCOUNTER2
+  cmp #0
+  bne !+  
+  lda #150
+  sta FCOUNTER2
+  ReceiveON()
+!:
+popreg()
+rts
+// END OF readIncomming ROUTINE -----------------------------------------------------------------------	
+
+
 delay:
    	ldx #$FF	 
    	loopy:
    	ldy #$FF
    	  loopx:
-//   	    inc $d020
+   	    inc $d020
    	    dey
    	    bne loopx
    	dex
 	bne loopy
-	SetBorderColor(14)  // set border color to default
+	//SetBorderColor(14)  // set border color to default
 rts
 
-// * = $1000
-ssidnow:		.text "Current SSID:                   " // 32 chars
-passwordnow:	.text "Current Password:               " // 32 chars
-askssid:    	.text "Name of the wifi network (SSID):" // 32 chars
-askpassword:   	.text "What is the Wifi Password?:     " // 32 chars
-askyourname:    .text "What is your user name?:        " // 32 chars
-errorusername:  .text "ERROR: Name allready taken      " // 32 chars      
-numberuserstxt:    .text "List of connected users:        " // 32 chars      
-changeusertxt:     .text "Change username (F1), Back (F7) " // 32 chars      
+//* = $1000
+ssidnow:			.text "Current SSID:                   " // 32 chars
+passwordnow:		.text "Current Password:               " // 32 chars
+askssid:    		.text "Name of the wifi network (SSID):" // 32 chars
+askpassword:   		.text "What is the Wifi Password?:     " // 32 chars
+askyourname:    	.text "What is your user name?:        " // 32 chars
+errorusername:  	.text "ERROR: Name allready taken      " // 32 chars      
+numberuserstxt: 	.text "List of connected users:        " // 32 chars      
+changeusertxt:  	.text "Change username (F1), Back (F7) " // 32 chars      
+entertoexit:		.text "Just press RETURN to exit       " // 32 chars  
+errornouser:		.text "ERROR: No user with that name!  " // 32 chars  
+waituserslisttxt: 	.text "Collecting users, please Wait   " // 32 chars
+
     
-TXBUFFER:   	.fill 256,0        
-RXBUFFER:   	.fill 256,0                         
+TXBUFFER:   	.fill 256,0            
+RXBUFFER:   	.fill 256,0                                                 
 LINEBUFFER:   	.fill 256,0
 RS232PAR:     	.byte %00000110,%00000000 // 300 Baud  
 //RS232PAR:     	.byte %00001000,%00000000 // 1200 Baud  
 
-MEMP:           .byte $01 // temp buffer for cursor postion offset, also line length
+MEMP:           .byte $00 // temp buffer for cursor postion offset, also line length
 PRGCNT:         .byte $00 
 HCOUNT:			.byte $00
 CHARBUFFER:     .byte $20
@@ -702,9 +813,15 @@ HASTEXT:        .byte $00
 TXPREFIX:       .byte $00
 LINECOUNT:      .byte $00
 RECEIVER:       .fill 50,0
+RXMESSCOL:		.byte $05
 
-cursorX:		.byte $0
-cursorY:		.byte $0
+cursorX:		.byte $00
+cursorY:		.byte $00
+
+BUFFERPOS:		.byte $00
+
+FCOUNTER:		.byte $00
+FCOUNTER2:		.byte $C8
 
     
 
@@ -726,21 +843,6 @@ cursorY:		.byte $0
 	tax		//move it to the x register
 	pla		//pull the acimulator from the stack
 	plp		//pull the the processor status from the stack
-}
-
-.macro delay1(){
-pushreg()
-   	ldx #$FF	 
-   	loopy:
-   	ldy #$FF
-   	  loopx:
- //  	    inc $d020
-   	    dey
-   	    bne loopx
-   	dex
-	bne loopy
-	SetBorderColor(14)  // set border color to default
-popreg()
 }
 
 .macro readLineToTXBuffer(lineaddress){
@@ -766,8 +868,9 @@ pushreg()
     sta TXBUFFER,x 		// end with zero    
 popreg()
 }
-    
-.macro sendBuffer(prefix){
+
+
+.macro setBufferPrefix(prefix){
 pushreg()
 	ldy #$00
    	lda #prefix
@@ -775,35 +878,39 @@ pushreg()
 	iny
 	lda #$00
 	sta TXBUFFER,y
-	jsr rs232TX   // send it
 popreg()
-}
+}   
    	
 .macro printRXBuffer(){
-pushreg()
+pushreg()    
+    jsr $FFCC // CLRCHN // reset input and output to keyboard and screen
+	
 	ldx #$00
-	!W1:
+	!W1:	    
 		lda RXBUFFER,x
 		jsr $FFD2   // CHROUT
         cmp #$00
         beq !W0+
         inx
         jmp !W1-
+        
     !W0:    
 popreg()
 }    
 
-.macro displayText(text,addr){
+.macro displayText(text,addr,color,coloraddr){
 pushreg()
 ldx #$00
 	!showms:   
-   		lda text,x     //setup message
-   		sec               //case conversion
+   		lda text,x			// setup message
+   		sec					// case conversion
    		sbc #$60
    		bcs !showchar+
    		lda text,x
 	!showchar:
-   		sta addr,x
+   		sta addr,x			// write the character
+		lda #color	 		// store the color value to the a register
+		sta coloraddr,x			// change the color of the character
    		inx
    		cpx #$20
    		bne !showms-
@@ -813,13 +920,13 @@ popreg()
 .macro ReadUntilReturn(){
 //pushreg()	
 	!loop:     
-  		jsr $FFCF     // Jump to Input routine
-  		cmp #$0D      // Return (ASCII 13) pressed?
-  		beq !exit+ // Yes, end.
-  		sta TXBUFFER,y  // Else, store char at buffer+Y
-  		iny           // Inc. char counter
-  		bne !loop-     // If Y != 0, get another char.  
-	!exit: 
+  		jsr $FFCF     		// Jump to Input routine
+  		cmp #$0D      		// Return (ASCII 13) pressed?
+  		beq !exit+			// Yes, end.
+  		sta TXBUFFER,y  	// Else, store char at buffer+Y
+  		iny					// Inc. char counter
+  		bne !loop-			// If Y != 0, get another char.  
+	!exit: 	
 //popreg()
 }	
   	
@@ -833,14 +940,10 @@ popreg()
 }
  
 .macro SetBorderColor(color) {
-pushreg()
+  pha		//push A to stack
   lda #color
   sta $d020
-popreg()
-}
-
-.macro GetCursor(){
-
+  pla		//pull the accumulator from the stack
 }
 
 //these two setcursor functions could be pushed into one, but all instances of Setcursor(<val1>,<val2>) should be changed to SetCursor(#<val1>,#<val2>)
@@ -861,15 +964,17 @@ popreg()
 }
 	
 .macro CloseRS232(){
-pushreg()
-  ldx #$02
-  jsr $FFC3 // CLOSE
-  jsr $FFCC // CLRCHN // reset input and output to keyboard and screen
-popreg()
+//pushreg() 
+  
+	lda #2
+	jsr $FFC3 // CLOSE    
+	jsr $FFCC // CLRCHN // reset input and output to keyboard and screen
+	
+//popreg()
 }
 
 .macro OpenRS232(){
-pushreg()
+//pushreg()
   lda #$02
   ldx #<RS232PAR
   ldy #>RS232PAR
@@ -879,8 +984,9 @@ pushreg()
   ldy #$00
   jsr $FFBA // SETLFS
   jsr $FFC0 // OPEN
-
-popreg()
+  ldx #2
+  jsr $FFC6					// CHKIN.  
+//popreg()
 }
 
 .macro DrawLine(){
@@ -895,7 +1001,21 @@ pushreg()
 	SetCursor($16,$00)
 popreg()
 }
+
+.macro ReceiveON(){
+ pushreg()  
 	
+	ldx #$02
+    jsr $FFC9 				// CHKOUT
+  	ldx #$00	
+	lda #$46				// Send 'F'
+	jsr $FFD2 				// send it
+	
+ popreg()
+}
+
+
+
 
 .macro BasicStarter(address) {
 	* = $0801 "Basic"
